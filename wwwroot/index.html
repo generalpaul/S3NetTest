@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>S3 Browser</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --fg: #1b2330; --muted: #5b6676; --line: #d5dae1;
+    --surface: #ffffff; --accent: #0b6e8a; --accent-soft: #d8eef4; --err: #b4331a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12171f; --fg: #e4e9f0; --muted: #98a3b3; --line: #2c3541;
+            --surface: #1a212c; --accent: #5cc3df; --accent-soft: #123846; --err: #f08a74; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; padding: 24px 16px 48px; }
+  main { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+  h1 { font-size: 1.4rem; margin: 0; }
+  h2 { font-size: 1.05rem; margin: 0 0 10px; }
+  p { margin: 0; color: var(--muted); }
+  section { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+  button.bucket { font: inherit; color: var(--fg); background: var(--surface); border: 1px solid var(--line);
+                  border-radius: 6px; padding: 8px 14px; cursor: pointer; }
+  button.bucket:hover { border-color: var(--accent); }
+  button.bucket[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 520px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { font-size: .75rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td.key { word-break: break-all; }
+  .note { margin-top: 10px; font-size: .9rem; color: var(--muted); }
+  .error { color: var(--err); white-space: pre-wrap; word-break: break-word; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>S3 Browser</h1>
+    <p>Pick a bucket to see its first 10 objects.</p>
+  </header>
+
+  <section aria-labelledby="buckets-h">
+    <h2 id="buckets-h">Buckets</h2>
+    <ul id="buckets"><li class="note">Loading buckets...</li></ul>
+  </section>
+
+  <section id="contents" aria-live="polite" hidden>
+    <h2 id="contents-title"></h2>
+    <div id="contents-body"></div>
+  </section>
+</main>
+
+<script>
+  const bucketsEl = document.getElementById('buckets');
+  const contentsEl = document.getElementById('contents');
+  const titleEl = document.getElementById('contents-title');
+  const bodyEl = document.getElementById('contents-body');
+
+  const fmtSize = n => n < 1024 ? n + ' B'
+    : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+  const fmtDate = s => s ? new Date(s).toLocaleString() : '';
+
+  function el(tag, props = {}, text) {
+    const e = document.createElement(tag);
+    Object.assign(e, props);
+    if (text !== undefined) e.textContent = text;
+    return e;
+  }
+
+  async function loadBuckets() {
+    try {
+      const res = await fetch('/api/buckets');
+      const buckets = await res.json();
+      bucketsEl.replaceChildren();
+      if (!buckets.length) {
+        bucketsEl.append(el('li', { className: 'note' }, 'No buckets are configured.'));
+        return;
+      }
+      for (const b of buckets) {
+        const btn = el('button', { className: 'bucket', type: 'button' }, b.name);
+        btn.setAttribute('aria-pressed', 'false');
+        btn.addEventListener('click', () => openBucket(b.name, btn));
+        const li = el('li'); li.append(btn); bucketsEl.append(li);
+      }
+    } catch (e) {
+      bucketsEl.replaceChildren(el('li', { className: 'error' }, 'Could not load buckets: ' + e.message));
+    }
+  }
+
+  async function openBucket(name, btn) {
+    document.querySelectorAll('button.bucket').forEach(b => b.setAttribute('aria-pressed', 'false'));
+    btn.setAttribute('aria-pressed', 'true');
+
+    contentsEl.hidden = false;
+    titleEl.textContent = name;
+    bodyEl.replaceChildren(el('p', {}, 'Loading...'));
+
+    try {
+      const res = await fetch('/api/buckets/' + encodeURIComponent(name) + '/objects');
+      const data = await res.json();
+
+      if (!res.ok || data.error) {
+        bodyEl.replaceChildren(el('p', { className: 'error' }, data.error || ('HTTP ' + res.status)));
+        return;
+      }
+      if (!data.objects.length) {
+        bodyEl.replaceChildren(el('p', {}, 'This bucket is empty.'));
+        return;
+      }
+
+      const table = el('table');
+      const head = el('tr');
+      [['Key', ''], ['Size', 'num'], ['Last modified', ''], ['Class', '']].forEach(([t, c]) =>
+        head.append(el('th', { className: c }, t)));
+      table.append(el('thead')).append(head);
+
+      const tbody = el('tbody');
+      for (const o of data.objects) {
+        const tr = el('tr');
+        tr.append(el('td', { className: 'key' }, o.key),
+                  el('td', { className: 'num' }, fmtSize(o.size)),
+                  el('td', {}, fmtDate(o.lastModified)),
+                  el('td', {}, o.storageClass || ''));
+        tbody.append(tr);
+      }
+      table.append(tbody);
+
+      const wrap = el('div', { className: 'scroll' }); wrap.append(table);
+      const note = el('p', { className: 'note' },
+        data.truncated ? 'Showing the first 10 objects. More exist in this bucket.'
+                       : data.count + ' object(s).');
+      bodyEl.replaceChildren(wrap, note);
+    } catch (e) {
+      bodyEl.replaceChildren(el('p', { className: 'error' }, 'Request failed: ' + e.message));
+    }
+  }
+
+  loadBuckets();
+</script>
+</body>
+</html>
