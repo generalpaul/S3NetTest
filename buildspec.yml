@@ -1,0 +1,28 @@
+version: 0.2
+
+# CodeBuild: build the Docker image, push it to ECR, and hand ECS the new image URI.
+# Project environment variables (set on the CodeBuild project):
+#   ECR_REPO         s3nettest
+#   CONTAINER_NAME   s3nettest   (must match the container name in the ECS task definition)
+
+phases:
+  pre_build:
+    commands:
+      - ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - REGISTRY=$ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com
+      - REPO_URI=$REGISTRY/$ECR_REPO
+      - IMAGE_TAG=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-7)
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $REGISTRY
+  build:
+    commands:
+      - docker build -t $REPO_URI:$IMAGE_TAG -t $REPO_URI:latest .
+  post_build:
+    commands:
+      - docker push $REPO_URI:$IMAGE_TAG
+      - docker push $REPO_URI:latest
+      # The ECS deploy action reads this file to roll the service to the new image.
+      - printf '[{"name":"%s","imageUri":"%s"}]' $CONTAINER_NAME $REPO_URI:$IMAGE_TAG > imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json
