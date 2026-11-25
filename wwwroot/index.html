@@ -117,7 +117,9 @@
       const head = el('tr');
       [['Key', ''], ['Size', 'num'], ['Last modified', ''], ['Class', '']].forEach(([t, c]) =>
         head.append(el('th', { className: c }, t)));
-      table.append(el('thead')).append(head);
+      const thead = el('thead');
+      thead.append(head);
+      table.append(thead);
 
       const tbody = el('tbody');
       for (const o of data.objects) {
